@@ -424,6 +424,8 @@ local function is_pressed(a, b, emulated)
 end
 local function update_controls()
     local players = get_players_including_disabled()
+	local unscroll = ModTextFileGetContent("mods/spell_lab_shugged/scroll_box_hovered.txt") == "true"
+            or tonumber(GlobalsGetValue(pen.GLOBAL_UNSCROLLER_SAFETY, "0")) == GameGetFrameNum()
     for i, player in ipairs(players) do
         local player_object = Player(player)
         player_object.controls_.enabled = false
@@ -499,8 +501,7 @@ local function update_controls()
             player_object.controls.mButtonFrameFly = get_frame_num_next()
         end
 
-        local unscroll = ModTextFileGetContent("mods/spell_lab_shugged/scroll_box_hovered.txt") == "true"
-            or tonumber(GlobalsGetValue(pen.GLOBAL_UNSCROLLER_SAFETY, "0")) == GameGetFrameNum()
+        
         player_object.controls.mButtonDownChangeItemR = player_object:mnin_bind("itemnext") and not (unscroll)
         if player_object:mnin_bind("itemnext", true) and player_object.controls.mButtonDownChangeItemR then
             player_object.controls.mButtonFrameChangeItemR = get_frame_num_next()
@@ -675,8 +676,24 @@ local function get_picked(picker)
     local candidates = EntityGetInRadius(px, py, 100)   -- was (0, 0, math.huge)
 
     local filtered = table.filter(candidates, function(v)
-        -- ... existing body unchanged, but reuse px, py instead of
-        --     calling EntityGetTransform(picker) again ...
+        local item = EntityGetFirstComponent(v, "ItemComponent")
+        local is_pickable = item and ComponentGetValue2(item, "is_pickable") and not validate(EntityGetParent(v))
+        local item_pickup_radius = item and math.min(ComponentGetValue2(item, "item_pickup_radius"), 14.1)
+
+        local item_data = get_item_data(v)
+        if item_data ~= nil then
+            if item_data.is_pickable ~= nil then
+                is_pickable = fetch(item_data.is_pickable, v, is_pickable, picker)
+            elseif is_pickable == nil then
+                is_pickable = true
+            end
+            if item_data.item_pickup_radius ~= nil then
+                item_pickup_radius = fetch(item_data.item_pickup_radius)
+            elseif item_pickup_radius == nil then
+                item_pickup_radius = 14.1
+            end
+        end
+
         local x, y = EntityGetTransform(v)
         local distance2 = get_distance2(x, y, px, py)
         return is_pickable and distance2 <= item_pickup_radius * item_pickup_radius
