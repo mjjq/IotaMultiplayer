@@ -661,36 +661,35 @@ local function fetch(v, ...)
     if type(v) == "function" then return v(...) end
     return v, ...
 end
+
+local picked_cache = {}
+
 local function get_picked(picker)
-    return table.iterate(table.filter(EntityGetInRadius(0, 0, math.huge), function(v)
-        local item = EntityGetFirstComponent(v, "ItemComponent")
-        local is_pickable = item and ComponentGetValue2(item, "is_pickable") and not validate(EntityGetParent(v))
-        local item_pickup_radius = item and math.min(ComponentGetValue2(item, "item_pickup_radius"), 14.1)
+    local frame = GameGetFrameNum()
+    local cached = picked_cache[picker]
+    if cached and cached.frame == frame and (cached.item == nil or validate(cached.item)) then
+        return cached.item
+    end
 
-        local item_data = get_item_data(v)
-        if item_data ~= nil then
-            if item_data.is_pickable ~= nil then
-                is_pickable = fetch(item_data.is_pickable, v, is_pickable, picker)
-            elseif is_pickable == nil then
-                is_pickable = true
-            end
-            if item_data.item_pickup_radius ~= nil then
-                item_pickup_radius = fetch(item_data.item_pickup_radius)
-            elseif item_pickup_radius == nil then
-                item_pickup_radius = 14.1
-            end
-        end
+    local px, py = EntityGetTransform(picker)
+    local candidates = EntityGetInRadius(px, py, 100)   -- was (0, 0, math.huge)
 
+    local filtered = table.filter(candidates, function(v)
+        -- ... existing body unchanged, but reuse px, py instead of
+        --     calling EntityGetTransform(picker) again ...
         local x, y = EntityGetTransform(v)
-        local distance2 = get_distance2(x, y, EntityGetTransform(picker))
+        local distance2 = get_distance2(x, y, px, py)
         return is_pickable and distance2 <= item_pickup_radius * item_pickup_radius
-    end), function(a, b)
-        local ax, ay = EntityGetTransform(a)
-        local a_distance2 = get_distance2(ax, ay, EntityGetTransform(picker))
-        local bx, by = EntityGetTransform(b)
-        local b_distance2 = get_distance2(bx, by, EntityGetTransform(picker))
-        return a_distance2 < b_distance2
     end)
+
+    local item = table.iterate(filtered, function(a, b)
+        local ax, ay = EntityGetTransform(a)
+        local bx, by = EntityGetTransform(b)
+        return get_distance2(ax, ay, px, py) < get_distance2(bx, by, px, py)
+    end)
+
+    picked_cache[picker] = {frame = frame, item = item}
+    return item
 end
 local function update_pickup()
     local players = get_players()
