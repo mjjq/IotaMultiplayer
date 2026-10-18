@@ -205,6 +205,7 @@ local function add_script_throw(item)
             _tags = "enabled_in_world,enabled_in_hand,enabled_in_inventory,iota_multiplayer.item_throw",
             script_source_file = "mods/iota_multiplayer/files/scripts/items/item_throw.lua",
             script_throw_item = "mods/iota_multiplayer/files/scripts/items/item_throw.lua",
+	    execute_every_n_frame = 10
         })
     end
     local children = get_children(item)
