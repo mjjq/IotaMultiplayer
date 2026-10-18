@@ -115,7 +115,7 @@ local function compute_camera_info()
     local camera_x, camera_y = (min_x + max_x) * 0.5, (min_y + max_y) * 0.5
     local resolution_x, resolution_y = math.min(max_x - min_x + min_resolution_x, max_resolution_x), math.min(max_y - min_y + min_resolution_y, max_resolution_y)
     local camera_zoom = math.max(resolution_x / max_resolution_x, resolution_y / max_resolution_y)
-    local frame = GameGetFrameNum()
+    local frame = GameGetFrameNum()   
     if previous_frame == nil or previous_frame < frame then
         previous_frame = frame
         if previous_camera_zoom ~= nil then
@@ -129,7 +129,7 @@ end
 local camera_info, camera_info_valid = {}, false
 local function invalidate_camera_info() camera_info_valid = false end
 local function get_camera_info()
-    if not camera_info_valid then
+   if not camera_info_valid or (previous_camera_zoom == nil or previous_frame ~= GameGetFrameNum()) then
         camera_info[1], camera_info[2], camera_info[3] = compute_camera_info()
         camera_info_valid = true
     end
