@@ -772,17 +772,38 @@ local function get_quick_slot(entity)
     local ability = EntityGetFirstComponentIncludingDisabled(entity, "AbilityComponent")
     return (item and ComponentGetValue2(item, "inventory_slot") or 0) + (ability and ComponentGetValue2(ability, "use_gun_script") and 0 or 4)
 end
+
+local ITEMSLOT_BINDS = {}
+for i = 1, 8 do ITEMSLOT_BINDS[i] = "itemslot" .. i end
+
+local quick_inventory_cache = {}
+local function get_quick_inventory(player)
+    local q = quick_inventory_cache[player]
+    if q == nil or not validate(q) or EntityGetParent(q) ~= player then
+        q = table.find(get_children(player), function(v) return EntityGetName(v) == "inventory_quick" end)
+        quick_inventory_cache[player] = q
+    end
+    return q
+end
+
 local function block_item_select(player)
-    local quick_inventory = table.find(get_children(player), function(v) return EntityGetName(v) == "inventory_quick" end)
-    local items = get_children(quick_inventory)
-    for i, item in ipairs(items) do
-        local item = EntityGetFirstComponentIncludingDisabled(item, "ItemComponent")
-        if item ~= nil then
-            ComponentSetValue2(item, "inventory_slot", -1, 0)
+    local quick_inventory = get_quick_inventory(player)
+    if quick_inventory == nil then return end
+    for _, item in ipairs(get_children(quick_inventory)) do
+        local item_component = EntityGetFirstComponentIncludingDisabled(item, "ItemComponent")
+        if item_component ~= nil then
+            local sx, sy = ComponentGetValue2(item_component, "inventory_slot")
+            if sx ~= -1 or sy ~= 0 then
+                ComponentSetValue2(item_component, "inventory_slot", -1, 0)
+            end
         end
     end
 end
+
+local gui_enabled_cache = {}
+
 local function update_gui()
+    local nf = get_frame_num_next()
     local gui_enabled_player = get_player_gui_enabled()
     local gui_enabled_player_object = Player(gui_enabled_player)
     local next_gui_enabled_player = gui_enabled_player
@@ -793,98 +814,111 @@ local function update_gui()
         next_gui_enabled_player = previous_gui_enabled_player
         previous_gui_enabled_player = nil
     end
+
     local players_including_disabled = get_players_including_disabled()
-    for i, player in ipairs(players_including_disabled) do
-        local player_object = Player(player)
-        if player_object.controls_.mButtonFrameInventory == get_frame_num_next() then
-            if player_object:is_gui_controlled() then
-                gui_enabled_player_object.controls_.mButtonFrameInventory = get_frame_num_next()
-            elseif player_object.gui ~= nil then
+    local objects = {}                       -- one Player() wrapper per player per frame
+    for _, player in ipairs(players_including_disabled) do
+        local po = Player(player)
+        objects[player] = po
+        local controlled = po:is_gui_controlled()
+        if po.controls_.mButtonFrameInventory == nf then
+            if controlled then
+                gui_enabled_player_object.controls_.mButtonFrameInventory = nf
+            elseif po.gui ~= nil then
                 next_gui_enabled_player = player
             end
         end
-        if player_object:is_gui_controlled() then
-            gui_enabled_player_object.controls_.mButtonDownDropItem = player_object.controls_.mButtonDownDropItem
-            if player_object.controls_.mButtonFrameDropItem == get_frame_num_next() then
-                gui_enabled_player_object.controls_.mButtonFrameDropItem = get_frame_num_next()
+        if controlled then
+            gui_enabled_player_object.controls_.mButtonDownDropItem = po.controls_.mButtonDownDropItem
+            if po.controls_.mButtonFrameDropItem == nf then
+                gui_enabled_player_object.controls_.mButtonFrameDropItem = nf
             end
         end
     end
 
     if next_gui_enabled_player ~= gui_enabled_player then
-        local next_gui_enabled_player_object = Player(next_gui_enabled_player)
+        local next_object = Player(next_gui_enabled_player)
         if gui_enabled_player_object.gui ~= nil then
-            next_gui_enabled_player_object.gui_.wallet_money_target = gui_enabled_player_object.gui.wallet_money_target
+            next_object.gui_.wallet_money_target = gui_enabled_player_object.gui.wallet_money_target
             remove_component(gui_enabled_player_object.gui._id)
             EntityAddComponent2(gui_enabled_player, "InventoryGuiComponent")
+            gui_enabled_cache = {}           -- component was rebuilt, cached state is stale
         end
-        if next_gui_enabled_player_object.damage_model_._enabled then
+        if next_object.damage_model_._enabled then
             mod.gui_control_index = 0
         end
     end
 
     if gui_uninitialized then
         gui_uninitialized = false
-        for i, player in ipairs(players_including_disabled) do
-            local player_object = Player(player)
-            if player_object.gui ~= nil then
-                remove_component(player_object.gui._id)
+        for _, player in ipairs(players_including_disabled) do
+            local po = objects[player]
+            if po.gui ~= nil then
+                remove_component(po.gui._id)
                 EntityAddComponent2(player, "InventoryGuiComponent")
             end
         end
+        gui_enabled_cache = {}
     end
 
-    local interactor = table.find(players_including_disabled, function(v)
-        local object = Player(v)
-        return object.controls_.mButtonFrameInteract == get_frame_num_next() and validate(object.pickupper_.only_pick_this_entity) and not object:is_gui_controlled()
-    end)
+    local interactor
+    for _, v in ipairs(players_including_disabled) do
+        local object = objects[v]
+        if object.controls_.mButtonFrameInteract == nf
+        and validate(object.pickupper_.only_pick_this_entity)
+        and not object:is_gui_controlled() then
+            interactor = v
+            break
+        end
+    end
     if interactor ~= nil then
-        local interactor_object = Player(interactor)
-        local next_gui_enabled_player_object = Player(next_gui_enabled_player)
-        interactor_object.gui_.mBackgroundOverlayAlpha = (next_gui_enabled_player_object.gui_.mBackgroundOverlayAlpha or 0) * 1.1320754716981132 --1 / (1 - 7 / 60)
-        interactor_object.gui_.wallet_money_target = next_gui_enabled_player_object.gui_.wallet_money_target
+        local interactor_object = objects[interactor]
+        local next_object = Player(next_gui_enabled_player)
+        interactor_object.gui_.mBackgroundOverlayAlpha = (next_object.gui_.mBackgroundOverlayAlpha or 0) * 1.1320754716981132
+        interactor_object.gui_.wallet_money_target = next_object.gui_.wallet_money_target
         previous_gui_enabled_player = next_gui_enabled_player
         next_gui_enabled_player = interactor
     end
-    for i, player in ipairs(players_including_disabled) do
-        local player_object = Player(player)
-        player_object.gui_._enabled = player == next_gui_enabled_player
+
+    -- only write _enabled when the value actually changes
+    for _, player in ipairs(players_including_disabled) do
+        local want = player == next_gui_enabled_player
+        if gui_enabled_cache[player] ~= want then
+            objects[player].gui_._enabled = want
+            gui_enabled_cache[player] = want
+        end
     end
 
-    local players = get_players()
-    for i, player in ipairs(players) do
-        local player_object = Player(player)
-        for i = 1, 8 do
-            if player_object:mnin_bind("itemslot" .. i, true) then
-                local quick_inventory = table.find(get_children(player), function(v) return EntityGetName(v) == "inventory_quick" end)
-                local items = get_children(quick_inventory)
+    -- quick-slot hotkeys (logic unchanged)
+    for _, player in ipairs(get_players()) do
+        local po = objects[player] or Player(player)
+        for slot_key = 1, 8 do
+            if po:mnin_bind(ITEMSLOT_BINDS[slot_key], true) then
+                local items = get_children(get_quick_inventory(player))
                 local slots = {}
-                for i, item in ipairs(items) do
+                for _, item in ipairs(items) do
                     local slot = get_quick_slot(item)
-                    for k, v in pairs(slots) do
-                        if v == slot then
-                            slot = slot + 1
-                        end
+                    for _, v in pairs(slots) do
+                        if v == slot then slot = slot + 1 end
                     end
                     slots[item] = slot
                 end
-                table.sort(items, function(a, b)
-                    return slots[a] < slots[b]
-                end)
+                table.sort(items, function(a, b) return slots[a] < slots[b] end)
                 for j, item in ipairs(items) do
-                    if slots[item] == i - 1 and player_object.inventory_.mSavedActiveItemIndex ~= j - 1 then
-                        player_object.inventory_.mSavedActiveItemIndex = j - 1
-                        player_object.inventory_.mInitialized = false
-                        player_object.inventory_.mForceRefresh = true
+                    if slots[item] == slot_key - 1 and po.inventory_.mSavedActiveItemIndex ~= j - 1 then
+                        po.inventory_.mSavedActiveItemIndex = j - 1
+                        po.inventory_.mInitialized = false
+                        po.inventory_.mForceRefresh = true
                         GamePlaySound("data/audio/Desktop/ui.bank", "ui/item_equipped", nil, nil)
                     end
                 end
             end
         end
     end
-    local next_gui_enabled_player_object = Player(next_gui_enabled_player)
-    local diff = (next_gui_enabled_player_object.controls_.mButtonFrameInteract or 0) - GameGetFrameNum()
-    if not next_gui_enabled_player_object:is_inventory_open() and (diff < 0 or diff > 1) then
+
+    local next_object = Player(next_gui_enabled_player)
+    local diff = (next_object.controls_.mButtonFrameInteract or 0) - GameGetFrameNum()
+    if not next_object:is_inventory_open() and (diff < 0 or diff > 1) then
         block_item_select(next_gui_enabled_player)
     end
 end
