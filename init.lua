@@ -422,170 +422,181 @@ end
 local function is_pressed(a, b, emulated)
     return (a ~= b or not emulated) and b ~= 0
 end
+
+local aim_cache = {}
+local function get_aim(po)
+    local idx = po.index or 0
+    local entry = aim_cache[idx]
+    if entry == nil then entry = {}; aim_cache[idx] = entry end
+    local frame = GameGetFrameNum()
+    if entry.frame ~= frame then
+	    entry.frame = frame
+        entry[1], entry[2], entry[3] = po:mnin_stick("aim")
+    end
+    return entry[1], entry[2], entry[3]
+end
+
+
+-- held first; only ask for "pressed" when held is true
+local function read_bind(po, action, inmode)
+    local held, unbound, jpad
+    if inmode then held, unbound, jpad = po:mnin_bind(action, false, false, inmode)
+    else held, unbound, jpad = po:mnin_bind(action) end
+    local pressed = false
+    if held then
+        if inmode then pressed = po:mnin_bind(action, true, false, inmode)
+        else pressed = po:mnin_bind(action, true) end
+    end
+    return held, pressed, unbound, jpad
+end
+
+local function dir_bind(po, c, inv_open, nf, action, down_key, frame_key)
+    local held, pressed, _, jpad = read_bind(po, action)
+    local down = held and not (jpad and inv_open)
+    c[down_key] = down
+    if pressed and down then c[frame_key] = nf end
+    return held, pressed
+end
+
+local S = {}  -- per-frame shared values, reused
+
+local function update_player_controls(player, S)
+    local po = Player(player)
+    po.controls_.enabled = false
+    local c = po.controls                      -- look up once
+    if c == nil or not po.damage_model_._enabled or po.sprite_.rect_animation == "intro_stand_up" then
+        return
+    end
+    local nf = S.nf
+    local inv_open = po:is_inventory_open()    -- once, not up to 7 times
+    local is_first = po.index == 1
+
+    local held, pressed = read_bind(po, "usewand", "guied")
+    c.mButtonDownFire = held
+    if pressed then c.mButtonFrameFire = nf end
+    if held then c.mButtonLastFrameFire = nf end
+
+    if pressed and c.polymorph_hax and c.polymorph_next_attack_frame <= nf then
+        local ai = EntityGetFirstComponentIncludingDisabled(player, "AnimalAIComponent")
+        local attacks = EntityGetComponent(player, "AIAttackComponent") or {}
+        local attack_info = get_attack_info(player, ai, attacks)
+        local controls = EntityGetFirstComponent(player, "ControlsComponent")
+        if controls ~= nil and attack_info.entity_file ~= nil then
+            local x, y = get_attack_ranged_pos(player, attack_info)
+            local avx, avy = ComponentGetValue2(controls, "mAimingVector")
+            local projectile_entity = EntityLoad(attack_info.entity_file, x, y)
+            GameShootProjectile(player, x, y, x + avx, y + avy, projectile_entity)
+        end
+        c.polymorph_next_attack_frame = nf + attack_info.frames_between
+    end
+
+    held, pressed = read_bind(po, "sprayflask", "guied")
+    c.mButtonDownFire2 = held
+    if pressed then c.mButtonFrameFire2 = nf end
+
+    local throw, throw_pressed, _, throw_jpad = read_bind(po, "throw", "guied")
+    local throw_down = throw and not (throw_jpad and inv_open)
+    c.mButtonDownThrow = throw_down
+    if throw_pressed and throw_down then c.mButtonFrameThrow = nf end
+
+    local interact, _, interact_jpad = po:mnin_bind("interact")
+    interact = interact and not (interact_jpad and inv_open)
+    if interact and not c.mButtonDownInteract then c.mButtonFrameInteract = nf end
+    c.mButtonDownInteract = interact
+
+    dir_bind(po, c, inv_open, nf, "left",  "mButtonDownLeft",  "mButtonFrameLeft")
+    dir_bind(po, c, inv_open, nf, "right", "mButtonDownRight", "mButtonFrameRight")
+    local up_held, up_pressed = dir_bind(po, c, inv_open, nf, "up", "mButtonDownUp", "mButtonFrameUp")
+    dir_bind(po, c, inv_open, nf, "down",  "mButtonDownDown",  "mButtonFrameDown")
+
+    c.mButtonDownFly = up_held                 -- reuse; was 2 more mnin_bind calls
+    if up_pressed then c.mButtonFrameFly = nf end
+
+    local next_down, next_pressed = false, false
+    local prev_down, prev_pressed = false, false
+    if not S.unscroll then
+        next_down, next_pressed = read_bind(po, "itemnext")
+        prev_down, prev_pressed = read_bind(po, "itemprev")
+    end
+    c.mButtonDownChangeItemR = next_down
+    if next_pressed then c.mButtonFrameChangeItemR = nf; c.mButtonCountChangeItemR = 1
+    else c.mButtonCountChangeItemR = 0 end
+    c.mButtonDownChangeItemL = prev_down
+    if prev_pressed then c.mButtonFrameChangeItemL = nf; c.mButtonCountChangeItemL = 1
+    else c.mButtonCountChangeItemL = 0 end
+
+    held, pressed = read_bind(po, "inventory")
+    c.mButtonDownInventory = held
+    if pressed then c.mButtonFrameInventory = nf end
+
+    -- dropitem only matters while the inventory is open
+    local drop_down, drop_pressed = false, false
+    if inv_open then drop_down, drop_pressed = read_bind(po, "dropitem") end
+    c.mButtonDownDropItem = drop_down
+    if drop_pressed then c.mButtonFrameDropItem = nf end
+
+    dir_bind(po, c, inv_open, nf, "kick", "mButtonDownKick", "mButtonFrameKick")
+
+    c.mButtonDownLeftClick = is_first and S.mouse_left_down
+    if is_first and S.mouse_left_pressed then c.mButtonFrameLeftClick = nf end
+    c.mButtonDownRightClick = is_first and S.mouse_right_down
+    if is_first and S.mouse_right_pressed then c.mButtonFrameRightClick = nf end
+
+    c.mFlyingTargetY = select(2, EntityGetTransform(player)) - 10
+
+    local aim, aim_unbound, aim_emulated = get_aim(po)
+    local len = S.aim_length
+    if aim_unbound then
+        local mrx, mry = InputGetMousePosOnScreen()
+        local mx, my = get_pos_in_world(mrx, mry)
+        local cx, cy = EntityGetFirstHitboxCenter(player)
+        local avx, avy = mx - cx, my - cy
+        local magnitude = math.max(math.sqrt(avx * avx + avy * avy), len)
+        c.mAimingVector = {avx, avy}
+        c.mAimingVectorNormalized = {avx / magnitude, avy / magnitude}
+        local prev = c.mMousePositionRaw
+        c.mMousePosition = {mx, my}
+        c.mMousePositionRaw = {mrx, mry}
+        c.mMousePositionRawPrev = prev
+        c.mMouseDelta = {mrx - prev[1], mry - prev[2]}
+        return
+    end
+
+    local aim_raw = mnin_stick_raw("iota_multiplayer" .. po.index, "aim")
+    if inv_open then aim = {0, 0}; aim_raw = {0, 0} end
+    local latest = c.mAimingVectorNonZeroLatest
+    local pa = previous_aims[po.index] or {0, 0}
+    if is_pressed(pa[1], aim_raw[1], aim_emulated[1]) or is_pressed(pa[2], aim_raw[2], aim_emulated[2]) then
+        latest = aim
+    end
+    previous_aims[po.index] = aim_raw
+    c.mAimingVector = {latest[1] * len, latest[2] * len}
+    c.mAimingVectorNormalized = aim
+    c.mAimingVectorNonZeroLatest = latest
+    c.mGamepadAimingVectorRaw = aim
+    local mouse_position = c.mGamePadCursorInWorld
+    local mrx, mry = get_pos_on_screen(mouse_position())
+    local prev = c.mMousePositionRaw
+    c.mMousePosition = mouse_position
+    c.mMousePositionRaw = {mrx, mry}
+    c.mMousePositionRawPrev = prev
+    c.mMouseDelta = {mrx - prev[1], mry - prev[2]}
+end
+
 local function update_controls()
-    local players = get_players_including_disabled()
-	local unscroll = ModTextFileGetContent("mods/spell_lab_shugged/scroll_box_hovered.txt") == "true"
-            or tonumber(GlobalsGetValue(pen.GLOBAL_UNSCROLLER_SAFETY, "0")) == GameGetFrameNum()
-    for i, player in ipairs(players) do
-        local player_object = Player(player)
-        player_object.controls_.enabled = false
-        if player_object.controls == nil or not player_object.damage_model_._enabled or player_object.sprite_.rect_animation == "intro_stand_up" then
-            goto continue
-        end
+    local nf = get_frame_num_next()
+    S.nf = nf
+    S.unscroll = ModTextFileGetContent("mods/spell_lab_shugged/scroll_box_hovered.txt") == "true"
+        or tonumber(GlobalsGetValue(pen.GLOBAL_UNSCROLLER_SAFETY, "0")) == GameGetFrameNum()
+    S.aim_length = S.aim_length or tonumber(MagicNumbersGetValue("CONTROLS_AIMING_VECTOR_FULL_LENGTH_PIXELS"))
 
-        player_object.controls.mButtonDownFire = player_object:mnin_bind("usewand", false, false, "guied")
-        if player_object:mnin_bind("usewand", true, false, "guied") then
-            player_object.controls.mButtonFrameFire = get_frame_num_next()
-        end
-        if player_object.controls.mButtonDownFire then
-            player_object.controls.mButtonLastFrameFire = get_frame_num_next()
-        end
-        if player_object.controls.polymorph_hax and player_object.controls.polymorph_next_attack_frame <= get_frame_num_next() and player_object.controls.mButtonFrameFire == get_frame_num_next() then
-            local ai = EntityGetFirstComponentIncludingDisabled(player, "AnimalAIComponent")
-            local attacks = EntityGetComponent(player, "AIAttackComponent") or {}
-            local attack_info = get_attack_info(player, ai, attacks)
-            local controls = EntityGetFirstComponent(player, "ControlsComponent")
-            if controls ~= nil and attack_info.entity_file ~= nil then
-                local x, y = get_attack_ranged_pos(player, attack_info)
-                local aiming_vector_x, aiming_vector_y = ComponentGetValue2(controls, "mAimingVector")
-                local projectile_entity = EntityLoad(attack_info.entity_file, x, y)
-                GameShootProjectile(player, x, y, x + aiming_vector_x, y + aiming_vector_y, projectile_entity)
-            end
-            player_object.controls.polymorph_next_attack_frame = get_frame_num_next() + attack_info.frames_between
-        end
+    S.mouse_left_down = mnee.mnin_key("mouse_left", false, false, "guied")
+    S.mouse_left_pressed = S.mouse_left_down and mnee.mnin_key("mouse_left", true, false, "guied")
+    S.mouse_right_down = mnee.mnin_key("mouse_right", false, false, "guied")
+    S.mouse_right_pressed = S.mouse_right_down and mnee.mnin_key("mouse_right", true, false, "guied")
 
-        player_object.controls.mButtonDownFire2 = player_object:mnin_bind("sprayflask", false, false, "guied")
-        if player_object:mnin_bind("sprayflask", true, false, "guied") then
-            player_object.controls.mButtonFrameFire2 = get_frame_num_next()
-        end
-
-        local throw, throw_unbound, throw_jpad = player_object:mnin_bind("throw", false, false, "guied")
-        player_object.controls.mButtonDownThrow = throw and not (throw_jpad and player_object:is_inventory_open())
-        if player_object:mnin_bind("throw", true, false, "guied") and player_object.controls.mButtonDownThrow then
-            player_object.controls.mButtonFrameThrow = get_frame_num_next()
-        end
-
-        local interact, interact_unbound, interact_jpad = player_object:mnin_bind("interact")
-        interact = interact and not (interact_jpad and player_object:is_inventory_open())
-        if interact and not player_object.controls.mButtonDownInteract then
-            player_object.controls.mButtonFrameInteract = get_frame_num_next()
-        end
-        player_object.controls.mButtonDownInteract = interact
-
-        local left, left_unbound, left_jpad = player_object:mnin_bind("left")
-        player_object.controls.mButtonDownLeft = left and not (left_jpad and player_object:is_inventory_open())
-        if player_object:mnin_bind("left", true) and player_object.controls.mButtonDownLeft then
-            player_object.controls.mButtonFrameLeft = get_frame_num_next()
-        end
-
-        local right, right_unbound, right_jpad = player_object:mnin_bind("right")
-        player_object.controls.mButtonDownRight = right and not (right_jpad and player_object:is_inventory_open())
-        if player_object:mnin_bind("right", true) and player_object.controls.mButtonDownRight then
-            player_object.controls.mButtonFrameRight = get_frame_num_next()
-        end
-
-        local up, up_unbound, up_jpad = player_object:mnin_bind("up")
-        player_object.controls.mButtonDownUp = up and not (up_jpad and player_object:is_inventory_open())
-        if player_object:mnin_bind("up", true) and player_object.controls.mButtonDownUp then
-            player_object.controls.mButtonFrameUp = get_frame_num_next()
-        end
-
-        local down, down_unbound, down_jpad = player_object:mnin_bind("down")
-        player_object.controls.mButtonDownDown = down and not (down_jpad and player_object:is_inventory_open())
-        if player_object:mnin_bind("down", true) and player_object.controls.mButtonDownDown then
-            player_object.controls.mButtonFrameDown = get_frame_num_next()
-        end
-
-        player_object.controls.mButtonDownFly = player_object:mnin_bind("up")
-        if player_object:mnin_bind("up", true) then
-            player_object.controls.mButtonFrameFly = get_frame_num_next()
-        end
-
-        
-        player_object.controls.mButtonDownChangeItemR = player_object:mnin_bind("itemnext") and not (unscroll)
-        if player_object:mnin_bind("itemnext", true) and player_object.controls.mButtonDownChangeItemR then
-            player_object.controls.mButtonFrameChangeItemR = get_frame_num_next()
-            player_object.controls.mButtonCountChangeItemR = 1
-        else
-            player_object.controls.mButtonCountChangeItemR = 0
-        end
-
-        player_object.controls.mButtonDownChangeItemL = player_object:mnin_bind("itemprev") and not (unscroll)
-        if player_object:mnin_bind("itemprev", true) and player_object.controls.mButtonDownChangeItemL then
-            player_object.controls.mButtonFrameChangeItemL = get_frame_num_next()
-            player_object.controls.mButtonCountChangeItemL = 1
-        else
-            player_object.controls.mButtonCountChangeItemL = 0
-        end
-
-        player_object.controls.mButtonDownInventory = player_object:mnin_bind("inventory")
-        if player_object:mnin_bind("inventory", true) then
-            player_object.controls.mButtonFrameInventory = get_frame_num_next()
-        end
-
-        player_object.controls.mButtonDownDropItem = player_object:mnin_bind("dropitem") and player_object:is_inventory_open()
-        if player_object:mnin_bind("dropitem", true) and player_object.controls.mButtonDownDropItem then
-            player_object.controls.mButtonFrameDropItem = get_frame_num_next()
-        end
-
-        local kick, kick_unbound, kick_jpad = player_object:mnin_bind("kick")
-        player_object.controls.mButtonDownKick = kick and not (kick_jpad and player_object:is_inventory_open())
-        if player_object:mnin_bind("kick", true) and player_object.controls.mButtonDownKick then
-            player_object.controls.mButtonFrameKick = get_frame_num_next()
-        end
-
-        player_object.controls.mButtonDownLeftClick = player_object.index == 1 and mnee.mnin_key("mouse_left", false, false, "guied")
-        if mnee.mnin_key("mouse_left", true, false, "guied") and player_object.controls.mButtonDownLeftClick then
-            player_object.controls.mButtonFrameLeftClick = get_frame_num_next()
-        end
-
-        player_object.controls.mButtonDownRightClick = player_object.index == 1 and mnee.mnin_key("mouse_right", false, false, "guied")
-        if mnee.mnin_key("mouse_right", true, false, "guied") and player_object.controls.mButtonDownRightClick then
-            player_object.controls.mButtonFrameRightClick = get_frame_num_next()
-        end
-
-        player_object.controls.mFlyingTargetY = select(2, EntityGetTransform(player)) - 10
-
-        local aim, aim_unbound, aim_emulated = player_object:mnin_stick("aim")
-        local CONTROLS_AIMING_VECTOR_FULL_LENGTH_PIXELS = tonumber(MagicNumbersGetValue("CONTROLS_AIMING_VECTOR_FULL_LENGTH_PIXELS"))
-        if aim_unbound then
-            local mouse_position_raw_x, mouse_position_raw_y = InputGetMousePosOnScreen()
-            local mouse_position_x, mouse_position_y = get_pos_in_world(mouse_position_raw_x, mouse_position_raw_y)
-            local center_x, center_y = EntityGetFirstHitboxCenter(player)
-            local aiming_vector_x, aiming_vector_y = mouse_position_x - center_x, mouse_position_y - center_y
-            local magnitude = math.max(math.sqrt(aiming_vector_x * aiming_vector_x + aiming_vector_y * aiming_vector_y), CONTROLS_AIMING_VECTOR_FULL_LENGTH_PIXELS)
-            local aiming_vector_normalized_x, aiming_vector_normalized_y = aiming_vector_x / magnitude, aiming_vector_y / magnitude
-            player_object.controls.mAimingVector = {aiming_vector_x, aiming_vector_y}
-            player_object.controls.mAimingVectorNormalized = {aiming_vector_normalized_x, aiming_vector_normalized_y}
-            local mouse_position_raw_prev = player_object.controls.mMousePositionRaw
-            player_object.controls.mMousePosition = {mouse_position_x, mouse_position_y}
-            player_object.controls.mMousePositionRaw = {mouse_position_raw_x, mouse_position_raw_y}
-            player_object.controls.mMousePositionRawPrev = mouse_position_raw_prev
-            player_object.controls.mMouseDelta = {mouse_position_raw_x - mouse_position_raw_prev[1], mouse_position_raw_y - mouse_position_raw_prev[2]}
-            goto continue
-        end
-        local aim_raw = mnin_stick_raw("iota_multiplayer" .. player_object.index, "aim")
-        if player_object:is_inventory_open() then
-            aim = {0, 0}
-            aim_raw = {0, 0}
-        end
-        local aiming_vector_non_zero_latest = player_object.controls.mAimingVectorNonZeroLatest
-        if is_pressed((previous_aims[player_object.index] or {0, 0})[1], aim_raw[1], aim_emulated[1]) or is_pressed((previous_aims[player_object.index] or {0, 0})[2], aim_raw[2], aim_emulated[2]) then
-            aiming_vector_non_zero_latest = aim
-        end
-        previous_aims[player_object.index] = aim_raw
-        player_object.controls.mAimingVector = {aiming_vector_non_zero_latest[1] * CONTROLS_AIMING_VECTOR_FULL_LENGTH_PIXELS, aiming_vector_non_zero_latest[2] * CONTROLS_AIMING_VECTOR_FULL_LENGTH_PIXELS}
-        player_object.controls.mAimingVectorNormalized = aim
-        player_object.controls.mAimingVectorNonZeroLatest = aiming_vector_non_zero_latest
-        player_object.controls.mGamepadAimingVectorRaw = aim
-        local mouse_position = player_object.controls.mGamePadCursorInWorld
-        local mouse_position_raw_x, mouse_position_raw_y = get_pos_on_screen(mouse_position())
-        local mouse_position_raw_prev = player_object.controls.mMousePositionRaw
-        player_object.controls.mMousePosition = mouse_position
-        player_object.controls.mMousePositionRaw = {mouse_position_raw_x, mouse_position_raw_y}
-        player_object.controls.mMousePositionRawPrev = mouse_position_raw_prev
-        player_object.controls.mMouseDelta = {mouse_position_raw_x - mouse_position_raw_prev[1], mouse_position_raw_y - mouse_position_raw_prev[2]}
-        ::continue::
+    for _, player in ipairs(get_players_including_disabled()) do
+        update_player_controls(player, S)
     end
 end
 
@@ -651,13 +662,23 @@ local item_list = {
         end,
     },
 }
-local function get_item_data(v)
-    for i, item_data in ipairs(item_list) do
-        if item_data.pred(v) then
-            return item_data
+
+local function get_item_data(v, has_item_component)
+    if v == nil then return nil end
+    if has_item_component == nil then
+        has_item_component = EntityGetFirstComponent(v, "ItemComponent") ~= nil
+    end
+    if has_item_component then
+        local filename = EntityGetFilename(v)
+        if filename == "data/entities/items/pickup/heart_fullhp_temple.xml"
+        or filename == "data/entities/items/pickup/spell_refresh.xml" then
+            return item_list[1]
         end
     end
+    if EntityHasTag(v, "iota_multiplayer.player") then return item_list[2] end
+    if EntityHasTag(v, "coop_respawn") then return item_list[3] end
 end
+
 local function fetch(v, ...)
     if type(v) == "function" then return v(...) end
     return v, ...
@@ -680,7 +701,7 @@ local function get_picked(picker)
         local is_pickable = item and ComponentGetValue2(item, "is_pickable") and not validate(EntityGetParent(v))
         local item_pickup_radius = item and math.min(ComponentGetValue2(item, "item_pickup_radius"), 14.1)
 
-        local item_data = get_item_data(v)
+        local item_data = get_item_data(v, item ~= nil)
         if item_data ~= nil then
             if item_data.is_pickable ~= nil then
                 is_pickable = fetch(item_data.is_pickable, v, is_pickable, picker)
