@@ -70,7 +70,7 @@ ModTextFileSetContent("mods/iota_multiplayer/files/magic_numbers.xml", tostring(
 
 local previous_frame
 local previous_camera_zoom
-local function get_camera_info()
+local function compute_camera_info()
     local positions = {}
     local camera_center_player = get_player_at_index(mod.camera_center_index)
     local camera_center_player_object = Player(camera_center_player)
@@ -125,6 +125,15 @@ local function get_camera_info()
         end
     end
     return camera_x, camera_y, previous_camera_zoom
+end
+local camera_info, camera_info_valid = {}, false
+local function invalidate_camera_info() camera_info_valid = false end
+local function get_camera_info()
+    if not camera_info_valid then
+        camera_info[1], camera_info[2], camera_info[3] = compute_camera_info()
+        camera_info_valid = true
+    end
+    return camera_info[1], camera_info[2], camera_info[3]
 end
 
 local raw_game_get_camera_bounds = GameGetCameraBounds
@@ -1183,6 +1192,7 @@ local function update_window()
 end
 
 function OnWorldPreUpdate()
+    invalidate_camera_info()
     update_players()
     update_common()
     update_camera()
@@ -1192,5 +1202,6 @@ function OnWorldPreUpdate()
 end
 
 function OnWorldPostUpdate()
+    invalidate_camera_info()
     update_window()
 end
