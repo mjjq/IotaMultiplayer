@@ -209,8 +209,11 @@ local function add_script_throw(item)
         })
     end
     local children = get_children(item)
+    local skip_every = 10
     for i, child in ipairs(children) do
-        add_script_throw(child)
+	if (GameGetFrameNum()+i) % skip_every == 0 then
+	        add_script_throw(child)
+	end
     end
 end
 local function update_common()
